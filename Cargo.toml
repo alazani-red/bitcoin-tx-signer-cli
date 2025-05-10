@@ -1,0 +1,15 @@
+[package]
+name = "bitcoin-tx-signer-cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitcoin = { version = "0.32.5", features = ["serde", "std"] }
+secp256k1 = { version = "0.28.0", features = ["global-context", "std", "rand-std"] } # rand-std は WIFからの秘密鍵読み込みでは直接不要だが、テスト等で使われる可能性を考慮
+serde = { version = "1.0.197", features = ["derive"] }
+serde_json = "1.0.115"
+hex = "0.4.3"
+clap = { version = "4.5.4", features = ["derive"] }
+log = "0.4.21"
+env_logger = "0.11.3"
+thiserror = "2.0.12"
