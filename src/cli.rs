@@ -15,7 +15,7 @@ pub struct CliArgs {
     pub output_file: PathBuf,
 
     /// 使用するネットワーク ("bitcoin", "testnet", "regtest")
-    #[clap(short, long, value_parser, default_value = "bitcoin")]
+    #[clap(short, long, value_parser, default_value = "testnet")]
     pub network: String,
 }
 
