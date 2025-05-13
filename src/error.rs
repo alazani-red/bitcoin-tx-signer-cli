@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 use bitcoin::consensus::encode::Error as BitcoinEncodeError;
 use bitcoin::address::ParseError as BitcoinAddressError;
-// use bitcoin::sighash::InvalidSighashTypeError as BitcoinSighashError;
-use bitcoin::sighash::InvalidSighashTypeError as BitcoinSighashError;
+use bitcoin::blockdata::transaction::InputsIndexError  as BitcoinIndexError;
+use bitcoin::sighash::P2wpkhError as BitcoinSighashError; // Sighash計算エラー用
+// use bitcoin::consensus::encode::Error as BitcoinSighashError;
 use bitcoin::key::FromWifError as BitcoinKeyError; // WIFデコードエラー用
-use secp256k1::Error as SecpError;
+// use secp256k1::Error as SecpError;
 use thiserror::Error; // use thiserror::Error; を追加
 
 #[derive(Debug, Error)] // thiserror::Error を使用
@@ -28,8 +29,8 @@ pub enum AppError {
     #[error("Bitcoin秘密鍵(WIF)処理エラー: {0}")]
     BitcoinKey(#[from] BitcoinKeyError),
 
-    #[error("secp256k1エラー: {0}")]
-    Secp256k1(#[from] SecpError),
+    // #[error("secp256k1エラー: {0}")]
+    // Secp256k1(#[from] SecpError),
 
     #[error("Sighash計算エラー (入力インデックス {input_index}): {source}")]
     SighashError{
@@ -37,12 +38,20 @@ pub enum AppError {
         #[source]
         source: BitcoinSighashError,
     },
+    
+    #[error("Sighash計算エラー (入力インデックス {input_index}): {source}")]
+    IndexError{
+        input_index: usize,
+        #[source]
+        source: BitcoinIndexError,
+    },
+
 
     #[error("署名エラー (入力インデックス {input_index}): {source}")]
     SignatureError {
         input_index: usize,
         #[source]
-        source: secp256k1::Error, // secp256k1のエラー型
+        source: bitcoin::ecdsa::Error, // secp256k1のエラー型
     },
 
     #[error("ネットワーク不整合: CLI指定 ({cli_network}) vs WIF/アドレス ({inferred_network})")]
@@ -76,3 +85,12 @@ pub enum AppError {
     #[error("内部エラー: {0}")]
     Internal(String),
 }
+
+// pub enum BitcoinSighashError {
+//     #[error("インデックスエラー: {0}")]
+//     IndexError(String),
+// 
+//     // 他のエラータイプがあれば追加
+//     #[error("その他のエラー: {0}")]
+//     OtherError(String),
+// }

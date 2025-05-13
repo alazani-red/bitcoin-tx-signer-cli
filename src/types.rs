@@ -1,7 +1,8 @@
 use bitcoin::{OutPoint, TxOut, PrivateKey, PublicKey, Sequence, script::ScriptBuf, Amount};
 use crate::error::AppError;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// #[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)] // <- Copy と Clone を追加 (他に必要なトレイトも適宜)
 pub enum ScriptType {
     P2PKH,
     P2WPKH,

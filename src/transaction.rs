@@ -1,25 +1,11 @@
 use bitcoin::{
-    Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid,
-    absolute::LockTime, network::Network as BitcoinNetwork, sighash::{SighashCache, EcdsaSighashType},
-    secp256k1::{Secp256k1, Message, constants::SECRET_KEY_SIZE, All}, // All context
-    consensus::encode,
-    // ecdsa, // bitcoin::ecdsa::Signature を直接使う場合。今回は bitcoin::Signature でよい
-    key::FromWifError as KeyError, // from_wifが返すエラー型
-    // taproot::TaprootSpendInfo, // 今回は未使用
-    // key::TweakedPublicKey, // 今回は未使用
-    // psbt::Input as PsbtInput, // 今回は未使用
-    // bitcoin::Signature を使う (secp256k1::ecdsa::Signatureではない)
-    // bitcoin 0.32では bitcoin::ecdsa::Signature ではなく bitcoin::sighash:: स्थित EcdsaSig を使うか、
-    // bitcoin::taproot::Signature を使うことが多い。P2PKH/P2WPKHでは EcdsaSig。
-    // bitcoin::ecdsa::Signature は bitcoin::secp256k1::ecdsa::Signature のラッパー
-    // 0.32でも bitcoin::ecdsa::Signature は存在する
-    ecdsa::Signature as BitcoinEcdsaSignature,
+    absolute::LockTime, consensus::encode, ecdsa::Signature as BitcoinEcdsaSignature, key::FromWifError as KeyError, network::Network as BitcoinNetwork, script::PushBytesBuf, secp256k1::{constants::SECRET_KEY_SIZE, All, Message, Secp256k1}, sighash::{EcdsaSighashType, SighashCache}, Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid
 };
 use std::str::FromStr;
 
 use crate::{
     config::{InputConfig, UtxoInput, TransactionOutputDef},
-    error::AppError,
+    error::{AppError, },
     types::{ProcessedUtxo, ScriptType},
 };
 
@@ -202,9 +188,9 @@ pub fn create_and_sign_transaction(
                     input_index,
                     &p_utxo.tx_out.script_pubkey,
                     sighash_type.to_u32(),
-                ).map_err(|e| AppError::SighashError { input_index, source:e })?;
+                ).map_err(|e| AppError::IndexError {input_index, source: e })?;
                 sighash_message = Message::from_digest_slice(sighash.as_ref()) // Sighash は Hash なので as_ref()
-                    .map_err(|e| AppError::SighashError { input_index, source: e })?;
+                    .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
                 // secp256k1::ecdsa::Signature を生成
                 let secp_sig = secp.sign_ecdsa(&sighash_message, &p_utxo.private_key.inner);
                 
@@ -213,38 +199,51 @@ pub fn create_and_sign_transaction(
                     .map_err(|e| AppError::SignatureError { input_index, source: e })?;
 
                 let script_sig = bitcoin::script::Builder::new()
-                    .push_slice(btc_ecdsa_sig.to_vec())
+                    .push_slice(PushBytesBuf::try_from(btc_ecdsa_sig.to_vec()).expect("valid pushbytes"))
                     .push_key(&p_utxo.public_key)
                     .into_script();
-                sighash_cache.transaction_mut().input[input_index].script_sig = script_sig;
-                log::debug!("入力 {} (P2PKH) の署名完了。", input_index);
+                // sighash_cache.transaction().input[input_index].script_sig = script_sig;
+                // transaction.input[input_index].script_sig = script_sig; // 元の行
+                sighash_cache.transaction_mut(input_index)
+                    .map_err(|e| AppError::SighashError{input_index, source: e})? // エラーを適切にマッピング
+                    .script_sig = script_sig;
+                    log::debug!("入力 {} (P2PKH) の署名完了。", input_index);
             }
             ScriptType::P2WPKH => {
                 let script_code = p_utxo.tx_out.script_pubkey.p2wpkh_script_code()
                     .ok_or_else(|| AppError::Internal("P2WPKH script codeの取得に失敗".to_string()))?;
                 
                 // value は Amount 型, script_code は値渡し
-                let sighash = sighash_cache.segwit_signature_hash(
+                let sighash = sighash_cache.p2wpkh_signature_hash(
                     input_index,
-                    script_code, // ScriptBuf (値渡し)
+                    &script_code, // ScriptBuf (値渡し)
                     p_utxo.value, // Amount 型の UTXO の value
                     sighash_type,
                 ).map_err(|e| AppError::SighashError{input_index, source: e})?;
-                sighash_message = Message::from_slice(sighash.as_ref()) // Sighash は Hash なので as_ref()
-                     .map_err(|e| AppError::Secp256k1(e))?;
+                sighash_message = Message::from_digest_slice(sighash.as_ref()) // Sighash は Hash なので as_ref()
+                    .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
+                    //  .map_err(|e| AppError::Secp256k1(e))?;
 
                 let secp_sig = secp.sign_ecdsa(&sighash_message, &p_utxo.private_key.inner);
-                let btc_ecdsa_sig = BitcoinEcdsaSignature::from_secp_ecdsa(secp_sig, sighash_type);
+                // let btc_ecdsa_sig = BitcoinEcdsaSignature::from_secp_ecdsa(secp_sig, sighash_type);
+                // bitcoin::ecdsa::Signature を作成
+                let btc_ecdsa_sig = bitcoin::ecdsa::Signature::from_slice(&secp_sig.serialize_compact())
+                    .map_err(|e| AppError::SignatureError { input_index, source: e })?;
 
                 let mut witness = bitcoin::Witness::new();
                 witness.push(btc_ecdsa_sig.to_vec());
                 witness.push(p_utxo.public_key.to_bytes());
-                sighash_cache.transaction_mut().input[input_index].witness = witness;
+                // sighash_cache.transaction().input[input_index].witness = witness;
+                transaction.input[input_index].witness = witness;
+                // transaction.input[input_index].witness = witness; // 元の行
+                sighash_cache.transaction_mut(input_index)
+                    .map_err(|e| AppError::SighashError{input_index, source: e})? // エラーを適切にマッピング
+                    .witness = witness;
                 log::debug!("入力 {} (P2WPKH) の署名完了。", input_index);
             }
         }
     }
     log::info!("全ての入力の署名が完了しました。");
 
-    Ok(sighash_cache.into_transaction())
+    Ok(transaction)
 }
