@@ -6,18 +6,23 @@ use std::str::FromStr;
 use crate::{
     config::{InputConfig, UtxoInput, TransactionOutputDef},
     error::{AppError, },
-    types::{ProcessedUtxo, ScriptType},
+    types::{ProcessedUtxo, ScriptType}, // ScriptType が Clone または Copy を実装していることを確認してください
 };
 
 // Bitcoin Coreのデフォルトダスト閾値 (P2PKH/P2WPKH出力に対して)
 const DUST_THRESHOLD_SATS: u64 = 546;
 
 // トランザクションサイズの推定に使用するダミーデータ
-// DER署名(71-73バイト) + SIGHASHフラグ(1バイト)
-const DUMMY_SIGNATURE_LEN: usize = 72; // 71(max DER) + 1(sighash type)
-// 圧縮公開鍵
-// const COMPRESSED_PUBLIC_KEY_LEN: usize = 33;
+const DUMMY_SIGNATURE_LEN: usize = 72;
 
+// 署名に必要な情報を一時的に保持するための構造体
+struct SigningInfo {
+    input_index: usize,
+    sighash_message: Message,
+    private_key: PrivateKey, // bitcoin::PrivateKey は Clone を実装
+    public_key: PublicKey,   // bitcoin::PublicKey は Copy (かつ Clone) を実装
+    script_type: ScriptType, // ScriptType が Copy または Clone を実装している必要あり
+}
 
 pub fn create_and_sign_transaction(
     config: InputConfig,
@@ -26,13 +31,13 @@ pub fn create_and_sign_transaction(
 ) -> Result<Transaction, AppError> {
     log::info!("トランザクション構築処理を開始します。");
 
-    // 1. 入力データの検証とProcessedUtxoへの変換
+    // (1. 入力データの検証とProcessedUtxoへの変換 ... 変更なし)
     let mut processed_utxos: Vec<ProcessedUtxo> = Vec::new();
     let mut total_input_value_sats = 0;
 
     for utxo_input in config.utxos.iter() {
         let private_key = PrivateKey::from_wif(&utxo_input.private_key_wif)
-            .map_err(AppError::BitcoinKey)?; // エラー型を明示的に変換
+            .map_err(AppError::BitcoinKey)?;
         if private_key.network != cli_network.into() {
             return Err(AppError::NetworkMismatch {
                 cli_network: format!("{:?}", cli_network),
@@ -48,9 +53,9 @@ pub fn create_and_sign_transaction(
         let script_pubkey_bytes = hex::decode(&utxo_input.script_pubkey_hex)
             .map_err(|e| AppError::InputValidation(format!("scriptPubKeyHexのデコード失敗: {}", e)))?;
         let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
-        let script_type = ScriptType::from_script_buf(&script_pubkey)?;
+        let script_type = ScriptType::from_script_buf(&script_pubkey)?; // ScriptTypeの導出
 
-        let sequence_num = utxo_input.sequence.or(config.default_sequence).unwrap_or(Sequence::MAX.0); // Sequence::MAX.0 を使用
+        let sequence_num = utxo_input.sequence.or(config.default_sequence).unwrap_or(Sequence::MAX.0);
         let sequence = Sequence(sequence_num);
 
         let utxo_value = Amount::from_sat(utxo_input.value_sats);
@@ -62,18 +67,18 @@ pub fn create_and_sign_transaction(
         processed_utxos.push(ProcessedUtxo {
             out_point,
             tx_out,
-            private_key,
+            private_key, // private_key はここでムーブされるか、Clone される
             public_key,
-            script_type,
+            script_type, // script_type が Copy または Clone であることを確認
             sequence,
-            value: utxo_value, // Amount型で保持
+            value: utxo_value,
         });
         total_input_value_sats += utxo_input.value_sats;
         log::debug!("処理済みUTXO追加: txid={}, vout={}, value={}, type={:?}",
             utxo_input.txid, utxo_input.vout, utxo_input.value_sats, script_type);
     }
 
-    // 2. 受信者出力の作成
+    // (2. 受信者出力の作成 ... 変更なし)
     let mut outputs: Vec<TxOut> = Vec::new();
     let mut total_recipient_output_value_sats = 0;
     for output_def in config.outputs.iter() {
@@ -88,28 +93,27 @@ pub fn create_and_sign_transaction(
         log::debug!("受信者出力追加: address={}, value={}", output_def.address, output_def.value_sats);
     }
 
-    // 3. 手数料計算と変更（おつり）処理
+    // (3. 手数料計算と変更（おつり）処理 ... 変更なし)
     let initial_inputs: Vec<TxIn> = processed_utxos
         .iter()
         .map(|pu| {
             let mut tx_in = TxIn {
                 previous_output: pu.out_point,
-                script_sig: ScriptBuf::new(),
+                script_sig: ScriptBuf::new(), // 手数料計算時は空の script_sig
                 sequence: pu.sequence,
-                witness: bitcoin::Witness::new(),
+                witness: bitcoin::Witness::new(), // 手数料計算時は空の witness
             };
+            // 手数料計算のためのダミー署名と公開鍵のサイズをscript_sig/witnessに反映
             match pu.script_type {
                 ScriptType::P2PKH => {
-                    let dummy_sig_bytes = [0u8; DUMMY_SIGNATURE_LEN];
-                    let dummy_pk_bytes = pu.public_key.to_bytes();
                     tx_in.script_sig = bitcoin::script::Builder::new()
-                        .push_slice(&dummy_sig_bytes) // convert to slice
-                        .push_key(&pu.public_key) // public key ref
+                        .push_slice([0u8; DUMMY_SIGNATURE_LEN])
+                        .push_key(&pu.public_key)
                         .into_script();
                 }
                 ScriptType::P2WPKH => {
-                     tx_in.witness.push(vec![0u8; DUMMY_SIGNATURE_LEN]); // Vec<u8>
-                     tx_in.witness.push(pu.public_key.to_bytes()); // Vec<u8>
+                    tx_in.witness.push(vec![0u8; DUMMY_SIGNATURE_LEN]);
+                    tx_in.witness.push(pu.public_key.to_bytes());
                 }
             }
             tx_in
@@ -123,16 +127,15 @@ pub fn create_and_sign_transaction(
         .map_err(|e| AppError::ChangeAddressDerivation(format!("おつりアドレス形式エラーまたはネットワーク不整合 ({}): {}", config.change_address, e)))?;
 
     let change_tx_out_for_size = TxOut {
-        value: Amount::from_sat(0),
+        value: Amount::from_sat(0), // ダミーの金額
         script_pubkey: change_address.script_pubkey(),
     };
-    temp_outputs_for_size_calc.push(change_tx_out_for_size);
-
+    temp_outputs_for_size_calc.push(change_tx_out_for_size); // おつり出力もサイズ計算に含める
 
     let temp_tx = Transaction {
-        version: bitcoin::transaction::Version(2), // 明示的に Version(2)
+        version: bitcoin::transaction::Version(2),
         lock_time: LockTime::ZERO,
-        input: initial_inputs.clone(),
+        input: initial_inputs.clone(), // ダミー署名入りの入力
         output: temp_outputs_for_size_calc.clone(),
     };
 
@@ -149,7 +152,7 @@ pub fn create_and_sign_transaction(
     }
 
     let change_value_sats = total_input_value_sats - total_recipient_output_value_sats - total_fee_sats;
-    let mut final_outputs = outputs;
+    let mut final_outputs = outputs; // 受信者出力
 
     if change_value_sats >= DUST_THRESHOLD_SATS {
         log::debug!("おつり発生: {} sats, おつりアドレス: {}", change_value_sats, change_address);
@@ -159,87 +162,102 @@ pub fn create_and_sign_transaction(
         });
     } else if change_value_sats > 0 {
         log::warn!("おつり {} sats はダスト閾値 {} sats 未満のため手数料に含めます。", change_value_sats, DUST_THRESHOLD_SATS);
+        // この場合、手数料が実質的に total_fee_sats + change_value_sats となる
     }
     
+    // 署名対象のトランザクションを初期化 (script_sig と witness は空)
     let mut transaction = Transaction {
         version: bitcoin::transaction::Version(2),
         lock_time: LockTime::ZERO,
         input: processed_utxos.iter().map(|pu| TxIn {
             previous_output: pu.out_point,
-            script_sig: ScriptBuf::new(),
+            script_sig: ScriptBuf::new(), // 署名前は空
             sequence: pu.sequence,
-            witness: bitcoin::Witness::new(),
+            witness: bitcoin::Witness::new(), // 署名前は空
         }).collect(),
         output: final_outputs,
     };
 
+    // --- ここから署名処理の変更 ---
     log::info!("トランザクション署名処理を開始します。");
-    let mut sighash_cache = SighashCache::new(&mut transaction);
+    let mut signing_infos: Vec<SigningInfo> = Vec::new();
 
-    for (input_index, p_utxo) in processed_utxos.iter().enumerate() {
-        log::debug!("入力 {} (txid={}, vout={}) の署名を開始します。", input_index, p_utxo.out_point.txid, p_utxo.out_point.vout);
-        let sighash_type = EcdsaSighashType::All;
-        let sighash_message: Message;
+    // 1. 署名ハッシュ計算フェーズ
+    // このスコープ内で SighashCache を使用し、transaction を可変借用する
+    {
+        // SighashCache は署名がまだないトランザクションのコピーまたは参照で初期化
+        // SighashCache::new に渡す transaction は、このスコープ内でのみ可変借用される
+        let mut sighash_cache = SighashCache::new(&mut transaction);
 
-        match p_utxo.script_type {
+        for (input_index, p_utxo) in processed_utxos.iter().enumerate() {
+            log::debug!("入力 {} (txid={}, vout={}) の署名ハッシュ計算を開始します。", input_index, p_utxo.out_point.txid, p_utxo.out_point.vout);
+            let sighash_type = EcdsaSighashType::All;
+            let current_sighash_message: Message;
+
+            match p_utxo.script_type {
+                ScriptType::P2PKH => {
+                    let sighash = sighash_cache.legacy_signature_hash(
+                        input_index,
+                        &p_utxo.tx_out.script_pubkey,
+                        sighash_type.to_u32(),
+                    ).map_err(|e| AppError::IndexError { input_index, source: e })?;
+                     // エラー型を調整
+                    current_sighash_message = Message::from_digest_slice(sighash.as_ref())
+                        .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
+                }
+                ScriptType::P2WPKH => {
+                    let script_code = p_utxo.tx_out.script_pubkey.p2wpkh_script_code()
+                        .ok_or_else(|| AppError::Internal(format!("P2WPKH script codeの取得に失敗 (input {})", input_index)))?;
+                    
+                    let sighash = sighash_cache.p2wpkh_signature_hash(
+                        input_index,
+                        &script_code,
+                        p_utxo.value,
+                        sighash_type,
+                    ).map_err(|e| AppError::SighashError{input_index, source: e})?;
+                    current_sighash_message = Message::from_digest_slice(sighash.as_ref())
+                        .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
+                }
+            }
+            // ProcessedUtxoから clone するか、必要なフィールドをSigningInfoにコピーする
+            // PrivateKey, PublicKey, ScriptType は Clone または Copy が必要
+            signing_infos.push(SigningInfo {
+                input_index,
+                sighash_message: current_sighash_message,
+                private_key: p_utxo.private_key.clone(), // PrivateKeyはClone
+                public_key: p_utxo.public_key,         // PublicKeyはCopy
+                script_type: p_utxo.script_type,       // ScriptTypeがCopyかCloneであることを確認
+            });
+        }
+    } // ここで sighash_cache が破棄され、transaction の可変借用が解放される
+
+    log::info!("全ての署名ハッシュの計算が完了しました。署名生成と適用を開始します。");
+
+    // 2. 署名生成と適用フェーズ
+    // この時点では transaction は可変借用されていないため、直接変更可能
+    for info in signing_infos {
+        log::debug!("入力 {} ({:?}) の署名生成と適用を開始します。", info.input_index, info.script_type);
+
+        let secp_sig = secp.sign_ecdsa(&info.sighash_message, &info.private_key.inner);
+        let btc_ecdsa_sig = bitcoin::ecdsa::Signature::from_slice(&secp_sig.serialize_compact())
+            .map_err(|e| AppError::SignatureError { input_index: info.input_index, source: e })?;
+
+        match info.script_type {
             ScriptType::P2PKH => {
-                // value は Amount 型
-                let sighash = sighash_cache.legacy_signature_hash(
-                    input_index,
-                    &p_utxo.tx_out.script_pubkey,
-                    sighash_type.to_u32(),
-                ).map_err(|e| AppError::IndexError {input_index, source: e })?;
-                sighash_message = Message::from_digest_slice(sighash.as_ref()) // Sighash は Hash なので as_ref()
-                    .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
-                // secp256k1::ecdsa::Signature を生成
-                let secp_sig = secp.sign_ecdsa(&sighash_message, &p_utxo.private_key.inner);
-                
-                // bitcoin::ecdsa::Signature を作成
-                let btc_ecdsa_sig = bitcoin::ecdsa::Signature::from_slice(&secp_sig.serialize_compact())
-                    .map_err(|e| AppError::SignatureError { input_index, source: e })?;
-
-                let script_sig = bitcoin::script::Builder::new()
-                    .push_slice(PushBytesBuf::try_from(btc_ecdsa_sig.to_vec()).expect("valid pushbytes"))
-                    .push_key(&p_utxo.public_key)
+                let final_script_sig = bitcoin::script::Builder::new()
+                    .push_slice(PushBytesBuf::try_from(btc_ecdsa_sig.to_vec())
+                        .map_err(|_| AppError::Internal(format!("P2PKH署名のPushBytes変換失敗 (input {})", info.input_index)))?)
+                    .push_key(&info.public_key)
                     .into_script();
-                // sighash_cache.transaction().input[input_index].script_sig = script_sig;
-                // transaction.input[input_index].script_sig = script_sig; // 元の行
-                sighash_cache.transaction_mut(input_index)
-                    .map_err(|e| AppError::SighashError{input_index, source: e})? // エラーを適切にマッピング
-                    .script_sig = script_sig;
-                    log::debug!("入力 {} (P2PKH) の署名完了。", input_index);
+                transaction.input[info.input_index].script_sig = final_script_sig;
+                log::debug!("入力 {} (P2PKH) の署名適用完了。", info.input_index);
             }
             ScriptType::P2WPKH => {
-                let script_code = p_utxo.tx_out.script_pubkey.p2wpkh_script_code()
-                    .ok_or_else(|| AppError::Internal("P2WPKH script codeの取得に失敗".to_string()))?;
-                
-                // value は Amount 型, script_code は値渡し
-                let sighash = sighash_cache.p2wpkh_signature_hash(
-                    input_index,
-                    &script_code, // ScriptBuf (値渡し)
-                    p_utxo.value, // Amount 型の UTXO の value
-                    sighash_type,
-                ).map_err(|e| AppError::SighashError{input_index, source: e})?;
-                sighash_message = Message::from_digest_slice(sighash.as_ref()) // Sighash は Hash なので as_ref()
-                    .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
-                    //  .map_err(|e| AppError::Secp256k1(e))?;
-
-                let secp_sig = secp.sign_ecdsa(&sighash_message, &p_utxo.private_key.inner);
-                // let btc_ecdsa_sig = BitcoinEcdsaSignature::from_secp_ecdsa(secp_sig, sighash_type);
-                // bitcoin::ecdsa::Signature を作成
-                let btc_ecdsa_sig = bitcoin::ecdsa::Signature::from_slice(&secp_sig.serialize_compact())
-                    .map_err(|e| AppError::SignatureError { input_index, source: e })?;
-
-                let mut witness = bitcoin::Witness::new();
-                witness.push(btc_ecdsa_sig.to_vec());
-                witness.push(p_utxo.public_key.to_bytes());
-                // sighash_cache.transaction().input[input_index].witness = witness;
-                transaction.input[input_index].witness = witness;
-                // transaction.input[input_index].witness = witness; // 元の行
-                sighash_cache.transaction_mut(input_index)
-                    .map_err(|e| AppError::SighashError{input_index, source: e})? // エラーを適切にマッピング
-                    .witness = witness;
-                log::debug!("入力 {} (P2WPKH) の署名完了。", input_index);
+                let mut final_witness = bitcoin::Witness::new();
+                final_witness.push(btc_ecdsa_sig.to_vec());
+                final_witness.push(info.public_key.to_bytes());
+                transaction.input[info.input_index].witness = final_witness;
+                log::debug!("入力 {} (P2WPKH) の署名適用完了。", info.input_index);
             }
         }
     }
