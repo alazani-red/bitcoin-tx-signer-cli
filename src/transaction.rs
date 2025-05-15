@@ -36,7 +36,7 @@ pub fn create_and_sign_transaction(
 ) -> Result<Transaction, AppError> {
     log::info!("トランザクション構築処理を開始します。");
 
-    // (1. 入力データの検証とProcessedUtxoへの変換 ... 変更なし)
+    // 1. 入力データの検証とProcessedUtxoへの変換
     let mut processed_utxos: Vec<ProcessedUtxo> = Vec::new();
     let mut total_input_value_sats = 0;
 
@@ -83,7 +83,7 @@ pub fn create_and_sign_transaction(
             utxo_input.txid, utxo_input.vout, utxo_input.value_sats, script_type);
     }
 
-    // (2. 受信者出力の作成 ... 変更なし)
+    // 2. 受信者出力の作成 
     let mut outputs: Vec<TxOut> = Vec::new();
     let mut total_recipient_output_value_sats = 0;
     for output_def in config.outputs.iter() {
@@ -98,7 +98,7 @@ pub fn create_and_sign_transaction(
         log::debug!("受信者出力追加: address={}, value={}", output_def.address, output_def.value_sats);
     }
 
-    // (3. 手数料計算と変更（おつり）処理 ... 変更なし)
+    // 3. 手数料計算と変更（おつり）処理
     let initial_inputs: Vec<TxIn> = processed_utxos
         .iter()
         .map(|pu| {
@@ -170,7 +170,7 @@ pub fn create_and_sign_transaction(
         // この場合、手数料が実質的に total_fee_sats + change_value_sats となる
     }
     
-    // 署名対象のトランザクションを初期化 (script_sig と witness は空)
+    // 署名対象のトランザクションを初期化 
     let mut transaction = Transaction {
         version: bitcoin::transaction::Version(2),
         lock_time: LockTime::ZERO,
@@ -234,7 +234,7 @@ pub fn create_and_sign_transaction(
                     // P2PKH相当のscript_codeをScriptBuilderで直接構築
                     // Opcodeを直接プッシュする形式に変更
                     let script_code = Builder::new()
-                        .push_opcode(OP_DUP) // <-- Opcode:: を付けずに、直接オペコード定数を使用
+                        .push_opcode(OP_DUP) 
                         .push_opcode(OP_HASH160)
                         .push_slice(pubkey_hash)
                         .push_opcode(OP_EQUALVERIFY)
@@ -258,8 +258,7 @@ pub fn create_and_sign_transaction(
                         script_hex: _script.to_string(), // スクリプトの16進数表現を渡す
                     });
                 } 
-            }            // ProcessedUtxoから clone するか、必要なフィールドをSigningInfoにコピーする
-            // PrivateKey, PublicKey, ScriptType は Clone または Copy が必要
+            }
             signing_infos.push(SigningInfo {
                 input_index,
                 sighash_message: current_sighash_message,
@@ -273,7 +272,6 @@ pub fn create_and_sign_transaction(
     log::info!("全ての署名ハッシュの計算が完了しました。署名生成と適用を開始します。");
 
     // 2. 署名生成と適用フェーズ
-    // この時点では transaction は可変借用されていないため、直接変更可能
     for info in signing_infos {
         log::debug!("入力 {} ({:?}) の署名生成と適用を開始します。", info.input_index, info.script_type);
 

@@ -3,9 +3,7 @@ use bitcoin::consensus::encode::Error as BitcoinEncodeError;
 use bitcoin::address::ParseError as BitcoinAddressError;
 use bitcoin::blockdata::transaction::InputsIndexError  as BitcoinIndexError;
 use bitcoin::sighash::P2wpkhError as BitcoinSighashError; // Sighash計算エラー用
-// use bitcoin::consensus::encode::Error as BitcoinSighashError;
 use bitcoin::key::FromWifError as BitcoinKeyError; // WIFデコードエラー用
-// use secp256k1::Error as SecpError;
 use thiserror::Error; // use thiserror::Error; を追加
 
 #[derive(Debug, Error)] // thiserror::Error を使用
@@ -28,9 +26,6 @@ pub enum AppError {
 
     #[error("Bitcoin秘密鍵(WIF)処理エラー: {0}")]
     BitcoinKey(#[from] BitcoinKeyError),
-
-    // #[error("secp256k1エラー: {0}")]
-    // Secp256k1(#[from] SecpError),
 
     #[error("Sighash計算エラー (入力インデックス {input_index}): {source}")]
     SighashError{
@@ -73,24 +68,9 @@ pub enum AppError {
     #[error("おつりアドレスの導出に失敗しました: {0}")]
     ChangeAddressDerivation(String),
 
-    // #[error("トランザクション構築エラー: {0}")]
-    // TransactionBuild(String),
-
     #[error("不明なスクリプトタイプ: {script_hex}")]
     UnknownScriptType { script_hex: String },
-
-    // #[error("UTXOのscript_pubkey_hexからのスクリプト導出に失敗: {0}")]
-    // ScriptConversionError(String),
 
     #[error("内部エラー: {0}")]
     Internal(String),
 }
-
-// pub enum BitcoinSighashError {
-//     #[error("インデックスエラー: {0}")]
-//     IndexError(String),
-// 
-//     // 他のエラータイプがあれば追加
-//     #[error("その他のエラー: {0}")]
-//     OtherError(String),
-// }
