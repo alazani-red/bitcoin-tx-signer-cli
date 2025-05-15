@@ -1,12 +1,17 @@
 use bitcoin::{
-    absolute::LockTime, network::Network as BitcoinNetwork, script::{PushBytesBuf}, secp256k1::{All, Message, Secp256k1}, sighash::{EcdsaSighashType, SighashCache}, Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid
+    absolute::LockTime, network::Network as BitcoinNetwork, 
+    script::{Builder, PushBytesBuf, ScriptBuf}, 
+    opcodes::all::*,
+    secp256k1::{All, Message, Secp256k1}, 
+    sighash::{EcdsaSighashType, SighashCache}, 
+    Address, Amount, OutPoint, PrivateKey, PublicKey, Sequence, Transaction, TxIn, TxOut, Txid, 
 };
 use std::str::FromStr;
 
 use crate::{
     config::InputConfig,
     error::{AppError, },
-    types::{ProcessedUtxo, ScriptType}, // ScriptType が Clone または Copy を実装していることを確認してください
+    types::{ProcessedUtxo, ScriptType}, 
 };
 
 // Bitcoin Coreのデフォルトダスト閾値 (P2PKH/P2WPKH出力に対して)
@@ -194,6 +199,15 @@ pub fn create_and_sign_transaction(
             let sighash_type = EcdsaSighashType::All;
             let current_sighash_message: Message;
 
+            // Debug: input_index と script_pubkey の情報
+            println!("DEBUG: Current input_index: {}", input_index);
+            println!("DEBUG: script_pubkey (bytes): {:?}", p_utxo.tx_out.script_pubkey.as_bytes());
+            println!("DEBUG: script_pubkey (hex): {}", p_utxo.tx_out.script_pubkey.to_string()); // to_string()はhexを返すことを期待
+
+            // Debug: is_p2pkh と is_p2wpkh の結果
+            println!("DEBUG: is_p2pkh: {}", p_utxo.tx_out.script_pubkey.is_p2pkh());
+            println!("DEBUG: is_p2wpkh: {}", p_utxo.tx_out.script_pubkey.is_p2wpkh());
+
             match &p_utxo.tx_out.script_pubkey { // 直接script_pubkeyオブジェクトに対してメソッドを呼ぶ
                 script if script.is_p2pkh() => {
                     // P2PKHの処理
@@ -206,13 +220,33 @@ pub fn create_and_sign_transaction(
                          .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
                 },
                 script if script.is_p2wpkh() => {
-                    // P2WPKHの処理
-                    let script_code = script.p2wpkh_script_code() // script_pubkeyからscript_codeを取得
-                        .ok_or_else(|| AppError::Internal(format!("P2WPKH script codeの取得に失敗 (input {})", input_index)))?;
+                    println!("DEBUG: Matched to P2WPKH branch.");
+                    
+                    // P2WPKHのscriptPubKeyから公開鍵ハッシュを抽出
+                    let pubkey_hash_bytes = script.as_bytes();
+                    if pubkey_hash_bytes.len() != 22 || pubkey_hash_bytes[0] != 0x00 || pubkey_hash_bytes[1] != 0x14 {
+                        return Err(AppError::Internal(format!("P2WPKH script_pubkeyの形式が不正 (input {})", input_index)));
+                    }
+                    let pubkey_hash: [u8; 20] = pubkey_hash_bytes[2..22]
+                        .try_into()
+                        .map_err(|_| AppError::Internal(format!("公開鍵ハッシュのサイズが不正 (input {})", input_index)))?;
 
+                    // P2PKH相当のscript_codeをScriptBuilderで直接構築
+                    // Opcodeを直接プッシュする形式に変更
+                    let script_code = Builder::new()
+                        .push_opcode(OP_DUP) // <-- Opcode:: を付けずに、直接オペコード定数を使用
+                        .push_opcode(OP_HASH160)
+                        .push_slice(pubkey_hash)
+                        .push_opcode(OP_EQUALVERIFY)
+                        .push_opcode(OP_CHECKSIG)
+                        .into_script(); // ScriptBuf を得る
+
+                    println!("DEBUG: P2WPKH script_code (bytes) directly built: {:?}", script_code.as_bytes());
+                    println!("DEBUG: P2WPKH script_code (hex) directly built: {}", script_code.to_string());
+                    
                     let sighash = sighash_cache.p2wpkh_signature_hash(
                         input_index,
-                        &script_code, // script_codeを渡す
+                        &script_code, // ScriptBufの参照を渡す
                         p_utxo.value,
                         sighash_type,
                     ).map_err(|e| AppError::SighashError{input_index, source: e})?;
