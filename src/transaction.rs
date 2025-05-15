@@ -1,5 +1,5 @@
 use bitcoin::{
-    absolute::LockTime, consensus::encode, ecdsa::Signature as BitcoinEcdsaSignature, key::FromWifError as KeyError, network::Network as BitcoinNetwork, script::PushBytesBuf, secp256k1::{constants::SECRET_KEY_SIZE, All, Message, Secp256k1}, sighash::{EcdsaSighashType, SighashCache}, Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid
+    absolute::LockTime, consensus::encode, ecdsa::Signature as BitcoinEcdsaSignature, key::FromWifError as KeyError, network::Network as BitcoinNetwork, script::{self, PushBytesBuf}, secp256k1::{constants::SECRET_KEY_SIZE, All, Message, Secp256k1}, sighash::{EcdsaSighashType, SighashCache}, Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid
 };
 use std::str::FromStr;
 
@@ -194,32 +194,37 @@ pub fn create_and_sign_transaction(
             let sighash_type = EcdsaSighashType::All;
             let current_sighash_message: Message;
 
-            match p_utxo.script_type {
-                ScriptType::P2PKH => {
+            match &p_utxo.tx_out.script_pubkey { // 直接script_pubkeyオブジェクトに対してメソッドを呼ぶ
+                script if script.is_p2pkh() => {
+                    // P2PKHの処理
                     let sighash = sighash_cache.legacy_signature_hash(
                         input_index,
-                        &p_utxo.tx_out.script_pubkey,
+                        script,
                         sighash_type.to_u32(),
                     ).map_err(|e| AppError::IndexError { input_index, source: e })?;
-                     // エラー型を調整
                     current_sighash_message = Message::from_digest_slice(sighash.as_ref())
-                        .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
-                }
-                ScriptType::P2WPKH => {
-                    let script_code = p_utxo.tx_out.script_pubkey.p2wpkh_script_code()
+                         .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
+                },
+                script if script.is_p2wpkh() => {
+                    // P2WPKHの処理
+                    let script_code = script.p2wpkh_script_code() // script_pubkeyからscript_codeを取得
                         .ok_or_else(|| AppError::Internal(format!("P2WPKH script codeの取得に失敗 (input {})", input_index)))?;
-                    
+
                     let sighash = sighash_cache.p2wpkh_signature_hash(
                         input_index,
-                        &script_code,
+                        &script_code, // script_codeを渡す
                         p_utxo.value,
                         sighash_type,
                     ).map_err(|e| AppError::SighashError{input_index, source: e})?;
                     current_sighash_message = Message::from_digest_slice(sighash.as_ref())
                         .map_err(|e| AppError::SignatureError{input_index, source: bitcoin::ecdsa::Error::Secp256k1(e)})?;
-                }
-            }
-            // ProcessedUtxoから clone するか、必要なフィールドをSigningInfoにコピーする
+                },
+                _script => {
+                    return Err(AppError::UnknownScriptType {
+                        script_hex: _script.to_string(), // スクリプトの16進数表現を渡す
+                    });
+                } 
+            }            // ProcessedUtxoから clone するか、必要なフィールドをSigningInfoにコピーする
             // PrivateKey, PublicKey, ScriptType は Clone または Copy が必要
             signing_infos.push(SigningInfo {
                 input_index,
