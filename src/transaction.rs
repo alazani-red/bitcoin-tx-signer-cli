@@ -1,10 +1,10 @@
 use bitcoin::{
-    absolute::LockTime, consensus::encode, ecdsa::Signature as BitcoinEcdsaSignature, key::FromWifError as KeyError, network::Network as BitcoinNetwork, script::{self, PushBytesBuf}, secp256k1::{constants::SECRET_KEY_SIZE, All, Message, Secp256k1}, sighash::{EcdsaSighashType, SighashCache}, Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid
+    absolute::LockTime, network::Network as BitcoinNetwork, script::{PushBytesBuf}, secp256k1::{All, Message, Secp256k1}, sighash::{EcdsaSighashType, SighashCache}, Address, Amount, OutPoint, PrivateKey, PublicKey, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid
 };
 use std::str::FromStr;
 
 use crate::{
-    config::{InputConfig, UtxoInput, TransactionOutputDef},
+    config::InputConfig,
     error::{AppError, },
     types::{ProcessedUtxo, ScriptType}, // ScriptType が Clone または Copy を実装していることを確認してください
 };

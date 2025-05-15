@@ -73,14 +73,14 @@ pub enum AppError {
     #[error("おつりアドレスの導出に失敗しました: {0}")]
     ChangeAddressDerivation(String),
 
-    #[error("トランザクション構築エラー: {0}")]
-    TransactionBuild(String),
+    // #[error("トランザクション構築エラー: {0}")]
+    // TransactionBuild(String),
 
     #[error("不明なスクリプトタイプ: {script_hex}")]
     UnknownScriptType { script_hex: String },
 
-    #[error("UTXOのscript_pubkey_hexからのスクリプト導出に失敗: {0}")]
-    ScriptConversionError(String),
+    // #[error("UTXOのscript_pubkey_hexからのスクリプト導出に失敗: {0}")]
+    // ScriptConversionError(String),
 
     #[error("内部エラー: {0}")]
     Internal(String),

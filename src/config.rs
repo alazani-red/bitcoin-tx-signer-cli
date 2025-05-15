@@ -3,7 +3,6 @@ use serde::Deserialize;
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct InputConfig {
-    pub network: String, // "bitcoin", "testnet", "regtest"
     pub utxos: Vec<UtxoInput>,
     pub outputs: Vec<TransactionOutputDef>,
     pub fee_rate_sats_per_vb: u64,
